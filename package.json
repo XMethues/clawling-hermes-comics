@@ -1,0 +1,27 @@
+{
+  "name": "comics",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "bun install && bun run browser:install",
+    "browser:install": "bun run --filter @comics/crawler browser:install",
+    "db:generate": "bun run --filter @comics/db db:generate",
+    "db:migrate": "bun run --filter @comics/db db:migrate",
+    "crawler": "bun run --filter @comics/crawler start",
+    "mcp": "bun run --filter @comics/mcp-server start",
+    "typecheck": "bunx tsc --noEmit -p tsconfig.json",
+    "check": "biome check . && bun run typecheck",
+    "fix": "biome check --write .",
+    "ci": "bun run check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest",
+    "@types/bun": "latest",
+    "drizzle-kit": "latest",
+    "typescript": "latest"
+  }
+}

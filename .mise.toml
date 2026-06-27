@@ -1,0 +1,54 @@
+[tools]
+bun = "1.3.14"
+
+[env]
+_.file = ".env"
+DB_FILE_NAME = "{{config_root}}/data/comics.sqlite"
+CRAWLEE_STORAGE_DIR = "{{config_root}}/storage/crawler"
+MCP_HOST = "0.0.0.0"
+MCP_PORT = "3000"
+MCP_ALLOWED_HOSTS = "localhost,127.0.0.1"
+
+[tasks.setup]
+description = "Install dependencies and Playwright browsers"
+run = "bun run setup"
+
+[tasks.install]
+description = "Install Bun workspace dependencies"
+run = "bun install"
+
+[tasks."browser:install"]
+description = "Install Playwright browser binaries for the crawler"
+run = "bun run browser:install"
+
+[tasks."db:generate"]
+description = "Generate Drizzle migrations from the shared DB schema"
+run = "bun run db:generate"
+
+[tasks."db:migrate"]
+description = "Apply Drizzle migrations to DB_FILE_NAME"
+run = "bun run db:migrate"
+
+[tasks.crawler]
+description = "Run the Crawlee + Playwright crawler"
+run = "bun run crawler"
+
+[tasks.mcp]
+description = "Run the Hono + Bun MCP HTTP API service"
+run = "bun run mcp"
+
+[tasks.typecheck]
+description = "Typecheck all workspace TypeScript"
+run = "bun run typecheck"
+
+[tasks.check]
+description = "Run Biome checks and TypeScript typecheck"
+run = "bun run check"
+
+[tasks.fix]
+description = "Apply Biome safe fixes and formatting"
+run = "bun run fix"
+
+[tasks.ci]
+description = "Run the non-mutating CI quality gate"
+run = "bun run ci"

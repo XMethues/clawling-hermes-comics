@@ -1,0 +1,27 @@
+{
+  "name": "@comics/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./schema": {
+      "types": "./src/schema.ts",
+      "default": "./src/schema.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "db:generate": "cd ../.. && drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "cd ../.. && drizzle-kit migrate --config drizzle.config.ts"
+  },
+  "dependencies": {
+    "drizzle-orm": "latest"
+  },
+  "devDependencies": {
+    "drizzle-kit": "latest"
+  }
+}

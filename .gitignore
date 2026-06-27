@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.bun/
+
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Runtime data
+/data/
+/storage/
+*.sqlite
+*.sqlite-*
+
+# Build and cache output
+dist/
+build/
+coverage/
+.nyc_output/
+.cache/
+.turbo/
+.vite/
+*.tsbuildinfo
+
+# Test/browser artifacts
+playwright-report/
+test-results/
+blob-report/
+
+# Logs
+*.log
+logs/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+
+# Local workflow run logs
+.rpiv/workflows/runs/

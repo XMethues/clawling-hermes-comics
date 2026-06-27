@@ -1,0 +1,17 @@
+{
+  "name": "@comics/crawler",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run src/index.ts",
+    "browser:install": "playwright install chromium",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@comics/db": "workspace:*",
+    "crawlee": "latest",
+    "playwright": "latest"
+  }
+}
