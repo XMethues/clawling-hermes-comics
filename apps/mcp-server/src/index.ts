@@ -27,7 +27,7 @@ app.get("/health", (context) =>
     name: env.name,
     version: env.version,
     transport: "streamable-http",
-    schema: "deferred",
+    schema: "catalog",
   }),
 );
 

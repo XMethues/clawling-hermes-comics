@@ -16,12 +16,13 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:generate": "cd ../.. && drizzle-kit generate --config drizzle.config.ts",
-    "db:migrate": "cd ../.. && drizzle-kit migrate --config drizzle.config.ts"
+    "db:migrate": "cd ../.. && mkdir -p \"$(dirname \"$DB_FILE_NAME\")\" && drizzle-kit migrate --config drizzle.config.ts"
   },
   "dependencies": {
     "drizzle-orm": "latest"
   },
   "devDependencies": {
+    "better-sqlite3": "latest",
     "drizzle-kit": "latest"
   }
 }

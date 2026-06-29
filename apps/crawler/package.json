@@ -6,12 +6,21 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun run src/index.ts",
-    "browser:install": "playwright install chromium",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "browser:install": "bun -e 'await import(\"cloakbrowser\").then(({ ensureBinary }) => ensureBinary())'",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "rouman5:probe": "bun src/scripts/rouman5.ts probe",
+    "rouman5:crawl": "bun src/scripts/rouman5.ts crawl",
+    "18comic:probe": "bun src/scripts/18comic.ts probe",
+    "18comic:hanman": "bun src/scripts/18comic.ts hanman",
+    "production:probe": "bun src/scripts/production.ts probe-only",
+    "production:run": "bun src/scripts/production.ts run"
   },
   "dependencies": {
     "@comics/db": "workspace:*",
+    "cloakbrowser": "latest",
     "crawlee": "latest",
-    "playwright": "latest"
+    "drizzle-orm": "latest",
+    "playwright": "latest",
+    "playwright-core": "latest"
   }
 }

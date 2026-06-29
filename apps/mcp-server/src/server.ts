@@ -26,7 +26,7 @@ export function createComicsMcpServer(env: Pick<McpHttpEnv, "name" | "version">)
             text: JSON.stringify(
               {
                 dbFileName: dbEnv.fileName,
-                schema: "deferred",
+                schema: "catalog",
                 tables: Object.keys(schema),
               },
               null,

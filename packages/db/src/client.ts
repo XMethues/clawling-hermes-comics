@@ -15,11 +15,15 @@ export interface CreateDbOptions {
 export function createSqliteDatabase(fileName = getDbEnv().fileName): Database {
   mkdirSync(dirname(fileName), { recursive: true });
 
-  return new Database(fileName, { create: true });
+  const sqlite = new Database(fileName, { create: true });
+  sqlite.exec("PRAGMA foreign_keys = ON");
+
+  return sqlite;
 }
 
 export function createDb(options: CreateDbOptions = {}) {
   const sqlite = options.sqlite ?? createSqliteDatabase(options.fileName);
+  sqlite.exec("PRAGMA foreign_keys = ON");
 
   return drizzle(sqlite, { schema });
 }
