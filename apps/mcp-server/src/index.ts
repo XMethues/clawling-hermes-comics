@@ -9,6 +9,7 @@ const env = getMcpHttpEnv();
 const mcpServer = createComicsMcpServer(env);
 const transport = new WebStandardStreamableHTTPServerTransport({
   sessionIdGenerator: undefined,
+  enableJsonResponse: true,
 });
 
 await mcpServer.connect(transport);
@@ -32,7 +33,9 @@ app.get("/health", (context) =>
 );
 
 app.all("/mcp", (context) =>
-  transport.handleRequest(context.req.raw, { parsedBody: context.get("parsedBody") }),
+  transport.handleRequest(withMcpAcceptHeader(context.req.raw), {
+    parsedBody: context.get("parsedBody"),
+  }),
 );
 
 const httpServer = Bun.serve({
@@ -44,6 +47,22 @@ const httpServer = Bun.serve({
 console.info(
   `MCP HTTP API listening on http://${env.host}:${httpServer.port}/mcp; catalog persistence wired.`,
 );
+
+function withMcpAcceptHeader(request: Request): Request {
+  const accept = request.headers.get("accept");
+
+  if (accept?.includes("application/json") && accept.includes("text/event-stream")) {
+    return request;
+  }
+
+  const headers = new Headers(request.headers);
+  headers.set("accept", "application/json, text/event-stream");
+
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+  });
+}
 
 async function shutdown(signal: string): Promise<void> {
   console.info(`Received ${signal}; shutting down MCP HTTP API.`);
