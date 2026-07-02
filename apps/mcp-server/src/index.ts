@@ -41,7 +41,9 @@ const httpServer = Bun.serve({
   fetch: app.fetch,
 });
 
-console.info(`MCP HTTP API listening on http://${env.host}:${httpServer.port}/mcp`);
+console.info(
+  `MCP HTTP API listening on http://${env.host}:${httpServer.port}/mcp; catalog persistence wired.`,
+);
 
 async function shutdown(signal: string): Promise<void> {
   console.info(`Received ${signal}; shutting down MCP HTTP API.`);

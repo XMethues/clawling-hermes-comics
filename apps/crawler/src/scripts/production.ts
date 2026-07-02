@@ -13,16 +13,22 @@ import {
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { closeSqliteDatabase, createSqliteDatabase, getDbEnv } from "@comics/db";
 
+import {
+  type ComicQualityStats,
+  createEmptyQualityStats,
+  envPositiveInteger,
+} from "../qualityGates";
 import { eighteenComicHanmanSite } from "../sites/18comic";
 import { rouman5Site } from "../sites/rouman5";
 import type { ComicCrawlerMode, ComicCrawlSummary } from "../types";
 
 type ProductionCommand = "run" | "probe-only";
 type ProductionStatus = "succeeded" | "failed";
+type SiteId = "rouman5" | "18comic";
 type QualitySeverity = "warning" | "failure";
 
 interface SiteRunnerConfig {
-  id: "rouman5" | "18comic";
+  id: SiteId;
   label: string;
   site: typeof rouman5Site;
   probeScript: string;
@@ -43,27 +49,20 @@ interface SiteRunnerConfig {
   minFullComicsEnv: string;
 }
 
-interface QualityStats {
-  total: number;
-  missingImages: number;
-  missingViewCounts: number;
-  unknownStatuses: number;
-  zeroChapterEntries: number;
-}
-
 interface QualityFinding {
   severity: QualitySeverity;
-  site: string;
+  site: SiteId;
   mode: ComicCrawlerMode;
   message: string;
 }
 
 interface RunRecord {
-  site: string;
+  site: SiteId;
   mode: ComicCrawlerMode;
   summary: ComicCrawlSummary;
-  quality: QualityStats;
+  quality: ComicQualityStats;
   findings: QualityFinding[];
+  durationMs?: number;
 }
 
 interface ProductionSummary {
@@ -78,6 +77,23 @@ interface ProductionSummary {
   runs: RunRecord[];
   findings: QualityFinding[];
   errorMessage?: string;
+}
+
+interface ProductionSummaryFile {
+  schemaVersion: 1;
+  generatedAt: string;
+  overallStatus: ProductionStatus;
+  records: Array<{
+    site: SiteId;
+    mode: ComicCrawlerMode;
+    status: ProductionStatus;
+    crawlRunId: number;
+    comicsStored: number;
+    chaptersStored: number;
+    failedRequests: number;
+    errorMessage?: string;
+    durationMs?: number;
+  }>;
 }
 
 const SITE_RUNNERS: SiteRunnerConfig[] = [
@@ -143,54 +159,6 @@ function envOptionalString(name: string): string | undefined {
   const value = process.env[name]?.trim();
 
   return value ? value : undefined;
-}
-
-function envPositiveInteger(name: string, defaultValue: number): number {
-  const value = process.env[name]?.trim();
-
-  if (!value) {
-    return defaultValue;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error(`${name} must be a positive integer.`);
-  }
-
-  return parsed;
-}
-
-function envNonNegativeInteger(name: string, defaultValue: number): number {
-  const value = process.env[name]?.trim();
-
-  if (!value) {
-    return defaultValue;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`${name} must be a non-negative integer.`);
-  }
-
-  return parsed;
-}
-
-function envRatio(name: string, defaultValue: number): number {
-  const value = process.env[name]?.trim();
-
-  if (!value) {
-    return defaultValue;
-  }
-
-  const parsed = Number(value);
-
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-    throw new Error(`${name} must be a number between 0 and 1.`);
-  }
-
-  return parsed;
 }
 
 function envBoolean(name: string, defaultValue: boolean): boolean {
@@ -422,6 +390,7 @@ function backupSqliteDatabase(dbFileName: string, backupDir: string): string[] {
 }
 
 function markStaleRunningRunsFailed(sqlite: ReturnType<typeof createSqliteDatabase>): number {
+  // Startup/subprocess recovery only: clear stale running rows, never overwrite terminal runs.
   const rows = sqlite.query("select id from crawl_runs where status = 'running'").all();
 
   if (rows.length === 0) {
@@ -442,7 +411,7 @@ function markStaleRunningRunsFailed(sqlite: ReturnType<typeof createSqliteDataba
 function qualityStatsForRun(
   sqlite: ReturnType<typeof createSqliteDatabase>,
   crawlRunId: number,
-): QualityStats {
+): ComicQualityStats {
   const row = sqlite
     .query(
       `
@@ -457,7 +426,7 @@ join comics c on c.id = e.comic_id
 where e.last_crawl_run_id = ?
 `,
     )
-    .get(crawlRunId) as Partial<QualityStats> | null;
+    .get(crawlRunId) as Partial<ComicQualityStats> | null;
 
   return {
     total: Number(row?.total ?? 0),
@@ -466,100 +435,6 @@ where e.last_crawl_run_id = ?
     unknownStatuses: Number(row?.unknownStatuses ?? 0),
     zeroChapterEntries: Number(row?.zeroChapterEntries ?? 0),
   };
-}
-
-function ratio(part: number, total: number): number {
-  return total > 0 ? part / total : 0;
-}
-
-function evaluateQuality(
-  site: SiteRunnerConfig,
-  mode: ComicCrawlerMode,
-  summary: ComicCrawlSummary,
-  quality: QualityStats,
-): QualityFinding[] {
-  const findings: QualityFinding[] = [];
-  const minComics = envPositiveInteger(
-    mode === "probe" ? site.minProbeComicsEnv : site.minFullComicsEnv,
-    1,
-  );
-  const maxFailedRequests = envNonNegativeInteger("PRODUCTION_CRAWLER_MAX_FAILED_REQUESTS", 0);
-  const maxMissingImageRatio = envRatio("PRODUCTION_CRAWLER_MAX_MISSING_IMAGE_RATIO", 0);
-  const maxZeroChapterRatio = envRatio("PRODUCTION_CRAWLER_MAX_ZERO_CHAPTER_RATIO", 0);
-  const maxMissingViewCountRatio = envRatio(
-    "PRODUCTION_CRAWLER_MAX_MISSING_VIEW_COUNT_RATIO",
-    0.25,
-  );
-  const maxUnknownStatusRatio = envRatio("PRODUCTION_CRAWLER_MAX_UNKNOWN_STATUS_RATIO", 0.75);
-
-  if (summary.comicsStored < minComics) {
-    findings.push({
-      severity: "failure",
-      site: site.id,
-      mode,
-      message: `Stored ${summary.comicsStored} comic(s), below minimum ${minComics}.`,
-    });
-  }
-
-  if (summary.chaptersStored < 1) {
-    findings.push({
-      severity: "failure",
-      site: site.id,
-      mode,
-      message: "Stored zero chapter URLs.",
-    });
-  }
-
-  if (summary.failed > maxFailedRequests) {
-    findings.push({
-      severity: "failure",
-      site: site.id,
-      mode,
-      message: `Failed request count ${summary.failed} exceeded limit ${maxFailedRequests}.`,
-    });
-  }
-
-  const missingImageRatio = ratio(quality.missingImages, quality.total);
-  if (missingImageRatio > maxMissingImageRatio) {
-    findings.push({
-      severity: "failure",
-      site: site.id,
-      mode,
-      message: `Missing/placeholder image ratio ${missingImageRatio.toFixed(2)} exceeded limit ${maxMissingImageRatio}.`,
-    });
-  }
-
-  const zeroChapterRatio = ratio(quality.zeroChapterEntries, quality.total);
-  if (zeroChapterRatio > maxZeroChapterRatio) {
-    findings.push({
-      severity: "failure",
-      site: site.id,
-      mode,
-      message: `Zero-chapter entry ratio ${zeroChapterRatio.toFixed(2)} exceeded limit ${maxZeroChapterRatio}.`,
-    });
-  }
-
-  const missingViewCountRatio = ratio(quality.missingViewCounts, quality.total);
-  if (missingViewCountRatio > maxMissingViewCountRatio) {
-    findings.push({
-      severity: "warning",
-      site: site.id,
-      mode,
-      message: `Missing view-count ratio ${missingViewCountRatio.toFixed(2)} exceeded warning limit ${maxMissingViewCountRatio}.`,
-    });
-  }
-
-  const unknownStatusRatio = ratio(quality.unknownStatuses, quality.total);
-  if (unknownStatusRatio > maxUnknownStatusRatio) {
-    findings.push({
-      severity: "warning",
-      site: site.id,
-      mode,
-      message: `Unknown serialization-status ratio ${unknownStatusRatio.toFixed(2)} exceeded warning limit ${maxUnknownStatusRatio}.`,
-    });
-  }
-
-  return findings;
 }
 
 function maxRuntimeSecsFor(site: SiteRunnerConfig, mode: ComicCrawlerMode): number {
@@ -607,6 +482,7 @@ select
   cs.key as sourceKey,
   cr.request_queue_name as requestQueueName,
   cr.dataset_name as datasetName,
+  cr.status as status,
   cr.pages_succeeded as succeeded,
   cr.pages_failed as failed,
   cr.comics_stored as comicsStored,
@@ -632,6 +508,7 @@ limit 1
     sourceKey: string;
     requestQueueName: string | null;
     datasetName: string | null;
+    status: ProductionStatus;
     succeeded: number;
     failed: number;
     comicsStored: number;
@@ -654,6 +531,7 @@ limit 1
     crawlRunId: row.crawlRunId,
     requestQueueName: row.requestQueueName ?? "",
     datasetName: row.datasetName ?? undefined,
+    status: row.status,
     total: row.succeeded + row.failed,
     succeeded: row.succeeded,
     failed: row.failed,
@@ -674,16 +552,53 @@ limit 1
   };
 }
 
-function markCrawlRunFailed(
-  sqlite: ReturnType<typeof createSqliteDatabase>,
-  crawlRunId: number,
+function errorMessageFrom(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function failedRunRecord(
+  site: SiteRunnerConfig,
+  mode: ComicCrawlerMode,
   message: string,
-): void {
-  sqlite
-    .query(
-      "update crawl_runs set status = 'failed', error_message = ?, finished_at = coalesce(finished_at, ?) where id = ?",
-    )
-    .run(message, nowIso(), crawlRunId);
+  durationMs: number,
+): RunRecord {
+  const timestamp = nowIso();
+  const finding: QualityFinding = {
+    severity: "failure",
+    site: site.id,
+    mode,
+    message,
+  };
+
+  return {
+    site: site.id,
+    mode,
+    summary: {
+      sourceKey: site.site.key,
+      mode,
+      crawlRunId: 0,
+      requestQueueName: "",
+      status: "failed",
+      total: 0,
+      succeeded: 0,
+      failed: 0,
+      comicsStored: 0,
+      tagsStored: 0,
+      chaptersStored: 0,
+      startedAt: timestamp,
+      finishedAt: timestamp,
+      errors: [
+        {
+          sourceUrl: site.site.startUrls[mode].join(","),
+          retryCount: 0,
+          errorMessage: message,
+        },
+      ],
+    },
+    quality: createEmptyQualityStats(),
+    findings: [finding],
+    durationMs,
+  };
 }
 
 async function runSiteMode(
@@ -694,6 +609,7 @@ async function runSiteMode(
 ): Promise<RunRecord> {
   const script = scriptForMode(site, mode);
   const previousRunId = latestRunId(sqlite, site, mode);
+  const startedAtMs = Date.now();
   let subprocessError: unknown;
 
   console.info(`[production] Starting ${site.label} ${mode}.`);
@@ -707,38 +623,39 @@ async function runSiteMode(
     );
   } catch (error) {
     subprocessError = error;
-    markStaleRunningRunsFailed(sqlite);
   }
 
   let summary: ComicCrawlSummary;
   try {
     summary = latestSummaryForRun(sqlite, site, mode, previousRunId);
   } catch (error) {
-    if (subprocessError) {
-      throw subprocessError;
-    }
-
-    throw error;
+    const message = subprocessError
+      ? `Subprocess failed before a crawl run summary was available: ${errorMessageFrom(subprocessError)}; ${errorMessageFrom(error)}`
+      : errorMessageFrom(error);
+    const record = failedRunRecord(site, mode, message, Date.now() - startedAtMs);
+    console.error(`[production] FAILURE ${site.id} ${mode}: ${message}`);
+    return record;
   }
 
   const quality = qualityStatsForRun(sqlite, summary.crawlRunId);
-  const findings = evaluateQuality(site, mode, summary, quality);
+  const findings: QualityFinding[] = [];
+
+  if (summary.status === "failed") {
+    findings.push({
+      severity: "failure",
+      site: site.id,
+      mode,
+      message: summary.errors.at(-1)?.errorMessage ?? "Crawler recorded failed status.",
+    });
+  }
 
   if (subprocessError) {
     findings.push({
       severity: "failure",
       site: site.id,
       mode,
-      message: `Subprocess failed: ${subprocessError instanceof Error ? subprocessError.message : String(subprocessError)}`,
+      message: `Subprocess failed: ${errorMessageFrom(subprocessError)}`,
     });
-  }
-
-  const failureMessages = findings
-    .filter((finding) => finding.severity === "failure")
-    .map((finding) => finding.message);
-
-  if (failureMessages.length > 0) {
-    markCrawlRunFailed(sqlite, summary.crawlRunId, failureMessages.join(" "));
   }
 
   for (const finding of findings) {
@@ -747,7 +664,7 @@ async function runSiteMode(
   }
 
   console.info(
-    `[production] Finished ${site.label} ${mode}: ${summary.comicsStored} comics, ${summary.chaptersStored} chapter URLs, ${summary.failed} failed request(s).`,
+    `[production] Finished ${site.label} ${mode}: ${summary.comicsStored} comics, ${summary.chaptersStored} chapter URLs, ${summary.failed} failed request(s), DB status ${summary.status}.`,
   );
 
   return {
@@ -756,6 +673,7 @@ async function runSiteMode(
     summary,
     quality,
     findings,
+    durationMs: Date.now() - startedAtMs,
   };
 }
 
@@ -765,25 +683,22 @@ async function runSelectedSites(
   command: ProductionCommand,
   records: RunRecord[],
 ): Promise<void> {
-  for (const site of selectedSites()) {
-    const probe = await runSiteMode(root, sqlite, site, "probe");
-    records.push(probe);
+  const modes: ComicCrawlerMode[] = command === "probe-only" ? ["probe"] : ["probe", "full"];
+  const targets = selectedSites().flatMap((site) => modes.map((mode) => ({ site, mode })));
 
-    if (probe.findings.some((finding) => finding.severity === "failure")) {
-      throw new Error(`${site.id} probe failed quality gates; refusing to run full crawl.`);
-    }
-
-    if (command === "probe-only") {
-      continue;
-    }
-
-    const full = await runSiteMode(root, sqlite, site, "full");
-    records.push(full);
-
-    if (full.findings.some((finding) => finding.severity === "failure")) {
-      throw new Error(`${site.id} full crawl failed quality gates.`);
-    }
-  }
+  await Promise.allSettled(
+    targets.map(async ({ site, mode }) => {
+      try {
+        records.push(await runSiteMode(root, sqlite, site, mode));
+      } catch (error) {
+        const message = errorMessageFrom(error);
+        console.warn(
+          `[production] ${site.id} ${mode} failed without aborting siblings: ${message}`,
+        );
+        records.push(failedRunRecord(site, mode, message, 0));
+      }
+    }),
+  );
 }
 
 function deleteChildrenOlderThan(directory: string, keepDays: number): number {
@@ -840,13 +755,66 @@ function cleanupOldArtifacts(root: string): void {
   console.info(`[production] Deleted ${deletedBackups} old SQLite backup file(s).`);
 }
 
-function writeSummary(root: string, summary: ProductionSummary): string {
-  const logDir = resolveFromRoot(root, envString("PRODUCTION_CRAWLER_LOG_DIR", "logs/crawler"));
-  mkdirSync(logDir, { recursive: true });
+const MODE_ORDER: Record<ComicCrawlerMode, number> = { probe: 0, full: 1 };
 
-  const path = join(logDir, `${summary.startedAt.replace(/[:.]/gu, "-")}-${summary.command}.json`);
-  writeFileSync(path, `${JSON.stringify(summary, null, 2)}\n`);
-  console.info(`[production] Wrote summary: ${path}`);
+function sortRunRecords(records: RunRecord[]): void {
+  records.sort((left, right) => {
+    const siteOrder = left.site.localeCompare(right.site);
+
+    if (siteOrder !== 0) {
+      return siteOrder;
+    }
+
+    return MODE_ORDER[left.mode] - MODE_ORDER[right.mode];
+  });
+}
+
+function recordDurationMs(record: RunRecord): number | undefined {
+  if (record.durationMs !== undefined) {
+    return record.durationMs;
+  }
+
+  const startedAtMs = Date.parse(record.summary.startedAt);
+  const finishedAtMs = Date.parse(record.summary.finishedAt);
+
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(finishedAtMs)) {
+    return undefined;
+  }
+
+  return Math.max(0, finishedAtMs - startedAtMs);
+}
+
+function toProductionSummaryFile(summary: ProductionSummary): ProductionSummaryFile {
+  return {
+    schemaVersion: 1,
+    generatedAt: summary.finishedAt,
+    overallStatus: summary.status,
+    records: summary.runs.map((record) => ({
+      site: record.site,
+      mode: record.mode,
+      status: record.summary.status,
+      crawlRunId: record.summary.crawlRunId,
+      comicsStored: record.summary.comicsStored,
+      chaptersStored: record.summary.chaptersStored,
+      failedRequests: record.summary.failed,
+      errorMessage: record.summary.errors.at(-1)?.errorMessage,
+      durationMs: recordDurationMs(record),
+    })),
+  };
+}
+
+function writeSummary(root: string, summary: ProductionSummary): string {
+  const configuredPath =
+    envOptionalString("PRODUCTION_CRAWLER_SUMMARY_PATH") ?? "./data/last-production-summary.json";
+  const path = isAbsolute(configuredPath) ? configuredPath : resolveFromRoot(root, configuredPath);
+
+  try {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(toProductionSummaryFile(summary), null, 2)}\n`);
+    console.info(`[production] Wrote summary: ${path}`);
+  } catch (error) {
+    console.error(`[production] Failed to write summary ${path}: ${errorMessageFrom(error)}`);
+  }
 
   return path;
 }
@@ -919,6 +887,7 @@ async function main(): Promise<void> {
     backupFiles.push(...backupSqliteDatabase(dbFileName, backupDir));
 
     const sqlite = createSqliteDatabase(dbFileName);
+    sqlite.exec("PRAGMA busy_timeout = 30000");
 
     try {
       staleRunningRunsMarkedFailed = markStaleRunningRunsFailed(sqlite);
@@ -935,7 +904,18 @@ async function main(): Promise<void> {
   }
 
   const finishedAt = nowIso();
+  sortRunRecords(records);
   const findings = records.flatMap((record) => record.findings);
+
+  if (
+    status === "succeeded" &&
+    (records.some((record) => record.summary.status === "failed") ||
+      findings.some((finding) => finding.severity === "failure"))
+  ) {
+    status = "failed";
+    errorMessage = "One or more selected crawler runs failed.";
+  }
+
   const summary: ProductionSummary = {
     status,
     command,

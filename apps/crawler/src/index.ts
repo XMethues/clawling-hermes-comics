@@ -7,7 +7,7 @@ async function main(): Promise<void> {
   const dbEnv = getDbEnv();
   const crawlerEnv = getCrawlerEnv();
 
-  console.info(`DB file configured at ${dbEnv.fileName}. Catalog persistence schema is available.`);
+  console.info(`Catalog persistence wired to ${dbEnv.fileName}.`);
   console.info(`Starting crawler for ${crawlerEnv.startUrls.length} URL(s).`);
 
   const summary = await runCrawler({

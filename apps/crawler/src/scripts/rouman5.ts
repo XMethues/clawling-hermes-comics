@@ -1,8 +1,8 @@
 import { closeSqliteDatabase, createDb, createSqliteDatabase, getDbEnv } from "@comics/db";
 
 import { runComicSiteCrawler } from "../crawler";
+import { loadQualityGatesFromEnv } from "../qualityGates";
 import { rouman5BlockedUrlPatterns, rouman5Site } from "../sites/rouman5";
-import { finishCrawlRun } from "../storage";
 import type { ComicCrawlerMode } from "../types";
 
 function parseMode(value: string | undefined): ComicCrawlerMode {
@@ -51,6 +51,39 @@ function parseBoolean(name: string, defaultValue: boolean): boolean {
   throw new Error(`${name} must be a boolean value.`);
 }
 
+function parseStartUrls(name: string, defaultValue: string[]): string[] {
+  const value = process.env[name]?.trim();
+
+  if (!value) {
+    return defaultValue;
+  }
+
+  const urls = value
+    .split(",")
+    .map((url) => url.trim())
+    .filter(Boolean);
+
+  if (urls.length === 0) {
+    throw new Error(`${name} must contain at least one URL.`);
+  }
+
+  for (const url of urls) {
+    const parsed = new URL(url);
+
+    if (!["http:", "https:"].includes(parsed.protocol)) {
+      throw new Error(`${name} must contain only HTTP or HTTPS URLs.`);
+    }
+  }
+
+  return urls;
+}
+
+function startUrlsForMode(mode: ComicCrawlerMode): string[] {
+  return mode === "probe"
+    ? parseStartUrls("ROUMAN5_PROBE_START_URLS", rouman5Site.startUrls.probe)
+    : parseStartUrls("ROUMAN5_FULL_START_URLS", rouman5Site.startUrls.full);
+}
+
 function maxRequestsForMode(mode: ComicCrawlerMode): number {
   return mode === "probe"
     ? parsePositiveInteger("ROUMAN5_PROBE_MAX_REQUESTS", 20)
@@ -63,10 +96,13 @@ function maxRuntimeSecsForMode(mode: ComicCrawlerMode): number {
     : parsePositiveInteger("ROUMAN5_MAX_RUNTIME_SECS", 14_400);
 }
 
+let exitCode = 1;
+
 async function main(): Promise<void> {
   const mode = parseMode(process.argv[2]);
   const dbEnv = getDbEnv();
   const sqlite = createSqliteDatabase(dbEnv.fileName);
+  sqlite.exec("PRAGMA busy_timeout = 30000");
 
   try {
     const db = createDb({ sqlite });
@@ -74,7 +110,7 @@ async function main(): Promise<void> {
       db,
       site: rouman5Site,
       mode,
-      startUrls: rouman5Site.startUrls[mode],
+      startUrls: startUrlsForMode(mode),
       maxRequestsPerCrawl: maxRequestsForMode(mode),
       headless: parseBoolean("CRAWLER_HEADLESS", true),
       storageDir: process.env.CRAWLEE_STORAGE_DIR?.trim() || undefined,
@@ -82,38 +118,26 @@ async function main(): Promise<void> {
       sameDomainDelaySecs: parsePositiveInteger("ROUMAN5_SAME_DOMAIN_DELAY_SECS", 2),
       blockRequestUrlPatterns: rouman5BlockedUrlPatterns,
       maxRuntimeSecs: maxRuntimeSecsForMode(mode),
+      qualityGates: loadQualityGatesFromEnv(
+        process.env,
+        {
+          minProbeComicsEnv: "ROUMAN5_MIN_PROBE_COMICS",
+          minFullComicsEnv: "ROUMAN5_MIN_FULL_COMICS",
+        },
+        mode,
+      ),
     });
 
     console.info(
       `Rouman5 ${mode} finished: ${summary.comicsStored} comics, ${summary.chaptersStored} chapter URLs, ${summary.failed} failed request(s).`,
     );
 
-    const qualityErrors: string[] = [];
+    exitCode = summary.status === "succeeded" ? 0 : 1;
 
-    if (summary.comicsStored < 1) {
-      qualityErrors.push(`Rouman5 ${mode} stored zero comics; crawlability check failed.`);
-    }
-
-    if (summary.chaptersStored < 1) {
-      qualityErrors.push(`Rouman5 ${mode} stored zero chapter URLs; crawlability check failed.`);
-    }
-
-    if (summary.failed > 0) {
-      qualityErrors.push(`Rouman5 ${mode} finished with ${summary.failed} failed request(s).`);
-    }
-
-    if (qualityErrors.length > 0) {
-      finishCrawlRun(db, {
-        crawlRunId: summary.crawlRunId,
-        status: "failed",
-        pagesSucceeded: summary.succeeded,
-        pagesFailed: summary.failed,
-        comicsStored: summary.comicsStored,
-        chaptersStored: summary.chaptersStored,
-        errorMessage: qualityErrors.join(" "),
-        finishedAt: new Date().toISOString(),
-      });
-      throw new Error(qualityErrors.join(" "));
+    if (summary.status !== "succeeded") {
+      console.error(
+        `Rouman5 ${mode} failed: ${summary.errors.at(-1)?.errorMessage ?? "quality gate failed"}`,
+      );
     }
   } finally {
     closeSqliteDatabase(sqlite);
@@ -121,10 +145,10 @@ async function main(): Promise<void> {
 }
 
 await main()
-  .then(() => {
-    process.exit(0);
-  })
   .catch((error) => {
     console.error("Rouman5 crawler failed:", error);
-    process.exit(1);
+    exitCode = 1;
+  })
+  .finally(() => {
+    process.exit(exitCode);
   });

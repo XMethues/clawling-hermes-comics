@@ -13,7 +13,7 @@ export function createComicsMcpServer(env: Pick<McpHttpEnv, "name" | "version">)
   server.registerTool(
     "storage_status",
     {
-      description: "Report configured SQLite storage for the current skeleton.",
+      description: "Report configured SQLite storage for the catalog crawler.",
       inputSchema: z.object({}),
     },
     async () => {
