@@ -1,0 +1,18 @@
+[Unit]
+Description=Comic catalog crawler (one-shot run)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=colin
+WorkingDirectory=/opt/comics-crawler
+ExecStart=/usr/local/bin/bun run --filter @comics/crawler production:run
+EnvironmentFile=/opt/comics-crawler/.env
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=21600
+Nice=10
+
+[Install]
+WantedBy=multi-user.target
