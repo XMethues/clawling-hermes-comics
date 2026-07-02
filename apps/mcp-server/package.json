@@ -6,12 +6,14 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "dev": "bun --watch src/index.ts",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "bun test src/__tests__"
   },
   "dependencies": {
     "@comics/db": "workspace:*",
     "@modelcontextprotocol/hono": "latest",
     "@modelcontextprotocol/server": "latest",
+    "drizzle-orm": "latest",
     "hono": "latest",
     "zod": "latest"
   }
