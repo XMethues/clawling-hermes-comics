@@ -10,6 +10,15 @@ import {
 } from "crawlee";
 import { chromium } from "playwright";
 
+import {
+  addComicQualityStats,
+  type ComicQualityGates,
+  type ComicQualityStats,
+  computeRatioStatus,
+  createEmptyQualityStats,
+  ratio,
+  type TerminalCrawlRunStatus,
+} from "./qualityGates";
 import { type ComicSiteAdapter, routeLabelForUrl } from "./site";
 import { finishCrawlRun, startCrawlRun, storeExtractedComic } from "./storage";
 import type {
@@ -35,6 +44,7 @@ export interface ComicSiteCrawlerConfig {
   sameDomainDelaySecs?: number;
   blockRequestUrlPatterns?: string[];
   maxRuntimeSecs?: number;
+  qualityGates: ComicQualityGates;
 }
 
 interface ComicCrawlCounters {
@@ -81,6 +91,85 @@ function addStoredResult(counters: ComicCrawlCounters, result: ComicStoredResult
   counters.chaptersStored += result.chaptersStored;
 }
 
+function qualityGateErrors(
+  counters: ComicCrawlCounters,
+  qualityStats: ComicQualityStats,
+  gates: ComicQualityGates,
+): string[] {
+  const errors: string[] = [];
+
+  if (counters.failed > gates.maxFailedRequests) {
+    errors.push(
+      `Failed request count ${counters.failed} exceeded limit ${gates.maxFailedRequests}.`,
+    );
+  }
+
+  if (counters.comicsStored < gates.minComics) {
+    errors.push(`Stored ${counters.comicsStored} comic(s), below minimum ${gates.minComics}.`);
+  }
+
+  if (counters.chaptersStored < gates.minChapters) {
+    errors.push(
+      `Stored ${counters.chaptersStored} chapter URL(s), below minimum ${gates.minChapters}.`,
+    );
+  }
+
+  const missingImageRatio = ratio(qualityStats.missingImages, qualityStats.total);
+  if (missingImageRatio > gates.maxMissingImageRatio) {
+    errors.push(
+      `Missing/placeholder image ratio ${missingImageRatio.toFixed(2)} exceeded limit ${gates.maxMissingImageRatio}.`,
+    );
+  }
+
+  const zeroChapterRatio = ratio(qualityStats.zeroChapterEntries, qualityStats.total);
+  if (zeroChapterRatio > gates.maxZeroChapterRatio) {
+    errors.push(
+      `Zero-chapter entry ratio ${zeroChapterRatio.toFixed(2)} exceeded limit ${gates.maxZeroChapterRatio}.`,
+    );
+  }
+
+  const missingViewCountRatio = ratio(qualityStats.missingViewCounts, qualityStats.total);
+  if (missingViewCountRatio > gates.maxMissingViewCountRatio) {
+    errors.push(
+      `Missing view-count ratio ${missingViewCountRatio.toFixed(2)} exceeded limit ${gates.maxMissingViewCountRatio}.`,
+    );
+  }
+
+  const unknownStatusRatio = ratio(qualityStats.unknownStatuses, qualityStats.total);
+  if (unknownStatusRatio > gates.maxUnknownStatusRatio) {
+    errors.push(
+      `Unknown serialization-status ratio ${unknownStatusRatio.toFixed(2)} exceeded limit ${gates.maxUnknownStatusRatio}.`,
+    );
+  }
+
+  return errors;
+}
+
+function finalStatusFor(
+  runError: unknown,
+  counters: ComicCrawlCounters,
+  qualityStats: ComicQualityStats,
+  gates: ComicQualityGates,
+): TerminalCrawlRunStatus {
+  if (runError != null) {
+    return "failed";
+  }
+
+  if (counters.failed > gates.maxFailedRequests) {
+    return "failed";
+  }
+
+  if (counters.comicsStored < gates.minComics) {
+    return "failed";
+  }
+
+  if (counters.chaptersStored < gates.minChapters) {
+    return "failed";
+  }
+
+  return computeRatioStatus(qualityStats, gates);
+}
+
 async function runPlaywrightCrawler(
   crawler: PlaywrightCrawler,
   maxRuntimeSecs: number | undefined,
@@ -119,6 +208,7 @@ async function handleDetailPage(
   crawlRunId: number,
   dataset: Dataset<StandardComicExtract>,
   counters: ComicCrawlCounters,
+  qualityStats: ComicQualityStats,
   context: PlaywrightCrawlingContext,
 ): Promise<void> {
   const comic = await config.site.extractComic(context);
@@ -130,7 +220,9 @@ async function handleDetailPage(
   });
 
   addStoredResult(counters, stored);
+  addComicQualityStats(qualityStats, comic);
 
+  // DB persistence is the source of truth; Crawlee Dataset diagnostics are best-effort.
   await dataset.pushData(comic).catch((error) => {
     context.log.warning(
       `Stored comic ${comic.name}, but failed to push diagnostic Dataset record: ${errorMessageFrom(error)}`,
@@ -217,8 +309,6 @@ export async function runComicSiteCrawler(
   const requestQueueName = createQueueName(config.site.key, config.mode);
   const datasetName = `${requestQueueName}-results`;
   const startedAt = new Date().toISOString();
-  const requestQueue = await RequestQueue.open(requestQueueName);
-  const dataset = await Dataset.open<StandardComicExtract>(datasetName);
   const counters: ComicCrawlCounters = {
     succeeded: 0,
     failed: 0,
@@ -227,30 +317,38 @@ export async function runComicSiteCrawler(
     chaptersStored: 0,
     errors: [],
   };
+  const qualityStats = createEmptyQualityStats();
 
-  await requestQueue.addRequests(
-    config.startUrls.map((url) => ({
-      url,
-      label: routeLabelForUrl(config.site, url) ?? "LIST",
-    })),
-  );
-
-  const launchContext = await createCloakLaunchContext(config.headless);
-  const { crawlRun } = startCrawlRun(config.db, {
-    source: config.site,
-    mode: config.mode,
-    startUrls: config.startUrls,
-    requestQueueName,
-    datasetName,
-    startedAt,
-  });
-
+  let crawlRunId = 0;
   let crawler: PlaywrightCrawler | undefined;
   let runError: unknown;
   let finalizationError: unknown;
+  let teardownError: unknown;
   let finishedAt = "";
+  let finalStatus: TerminalCrawlRunStatus = "failed";
 
   try {
+    const { crawlRun } = startCrawlRun(config.db, {
+      source: config.site,
+      mode: config.mode,
+      startUrls: config.startUrls,
+      requestQueueName,
+      datasetName,
+      startedAt,
+    });
+    crawlRunId = crawlRun.id;
+
+    const requestQueue = await RequestQueue.open(requestQueueName);
+    const dataset = await Dataset.open<StandardComicExtract>(datasetName);
+
+    await requestQueue.addRequests(
+      config.startUrls.map((url) => ({
+        url,
+        label: routeLabelForUrl(config.site, url) ?? "LIST",
+      })),
+    );
+
+    const launchContext = await createCloakLaunchContext(config.headless);
     const router = createPlaywrightRouter();
 
     router.addHandler("LIST", async (context) => {
@@ -259,7 +357,7 @@ export async function runComicSiteCrawler(
     });
 
     router.addHandler("DETAIL", async (context) => {
-      await handleDetailPage(config, crawlRun.id, dataset, counters, context);
+      await handleDetailPage(config, crawlRunId, dataset, counters, qualityStats, context);
       counters.succeeded += 1;
     });
 
@@ -273,7 +371,7 @@ export async function runComicSiteCrawler(
       }
 
       if (label === "DETAIL") {
-        await handleDetailPage(config, crawlRun.id, dataset, counters, context);
+        await handleDetailPage(config, crawlRunId, dataset, counters, qualityStats, context);
         counters.succeeded += 1;
         return;
       }
@@ -323,33 +421,45 @@ export async function runComicSiteCrawler(
     });
   } finally {
     finishedAt = new Date().toISOString();
-    const finalStatus = runError || counters.failed > 0 ? "failed" : "succeeded";
+    finalStatus = finalStatusFor(runError, counters, qualityStats, config.qualityGates);
 
-    try {
-      finishCrawlRun(config.db, {
-        crawlRunId: crawlRun.id,
-        status: finalStatus,
-        pagesSucceeded: counters.succeeded,
-        pagesFailed: counters.failed,
-        comicsStored: counters.comicsStored,
-        chaptersStored: counters.chaptersStored,
-        errorMessage: counters.errors.at(-1)?.errorMessage,
-        finishedAt,
-      });
-    } catch (error) {
-      finalizationError = error;
-      counters.errors.push({
-        sourceUrl: config.startUrls.join(","),
-        retryCount: 0,
-        errorMessage: `Failed to finalize crawl run ${crawlRun.id}: ${errorMessageFrom(error)}`,
-      });
+    if (!runError) {
+      for (const message of qualityGateErrors(counters, qualityStats, config.qualityGates)) {
+        counters.errors.push({
+          sourceUrl: config.startUrls.join(","),
+          retryCount: 0,
+          errorMessage: message,
+        });
+      }
+    }
+
+    if (crawlRunId !== 0) {
+      try {
+        finishCrawlRun(config.db, {
+          crawlRunId,
+          status: finalStatus,
+          pagesSucceeded: counters.succeeded,
+          pagesFailed: counters.failed,
+          comicsStored: counters.comicsStored,
+          chaptersStored: counters.chaptersStored,
+          errorMessage: counters.errors.at(-1)?.errorMessage,
+          finishedAt,
+        });
+      } catch (error) {
+        finalizationError = error;
+        counters.errors.push({
+          sourceUrl: config.startUrls.join(","),
+          retryCount: 0,
+          errorMessage: `Failed to finalize crawl run ${crawlRunId}: ${errorMessageFrom(error)}`,
+        });
+      }
     }
 
     if (crawler) {
       try {
         await crawler.teardown();
       } catch (error) {
-        finalizationError ??= error;
+        teardownError = error;
         counters.errors.push({
           sourceUrl: config.startUrls.join(","),
           retryCount: 0,
@@ -363,16 +473,24 @@ export async function runComicSiteCrawler(
     throw runError;
   }
 
-  if (finalizationError) {
-    throw finalizationError;
+  if (finalizationError || teardownError) {
+    console.error(
+      `Crawler cleanup completed with error(s): ${[
+        finalizationError ? `finalization=${errorMessageFrom(finalizationError)}` : undefined,
+        teardownError ? `teardown=${errorMessageFrom(teardownError)}` : undefined,
+      ]
+        .filter(Boolean)
+        .join("; ")}`,
+    );
   }
 
   return {
     sourceKey: config.site.key,
     mode: config.mode,
-    crawlRunId: crawlRun.id,
+    crawlRunId,
     requestQueueName,
     datasetName,
+    status: finalStatus,
     total: counters.succeeded + counters.failed,
     succeeded: counters.succeeded,
     failed: counters.failed,

@@ -83,6 +83,7 @@ export interface ComicCrawlSummary {
   crawlRunId: number;
   requestQueueName: string;
   datasetName?: string;
+  status: Exclude<ComicCrawlRunStatus, "running">;
   total: number;
   succeeded: number;
   failed: number;
