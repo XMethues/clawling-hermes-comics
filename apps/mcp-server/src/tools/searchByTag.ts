@@ -35,7 +35,7 @@ export async function searchByTag(
   input: SearchByTagInput,
   options?: CatalogQueryOptions,
 ): Promise<SearchByTagResult> {
-  const normalizedTag = input.tag.toLowerCase();
+  const normalizedTag = normalizeTagForSearch(input.tag);
 
   return withCatalogDb(options, (db) => {
     const tagPredicate = sql`lower(${comicTags.normalizedTag}) = ${normalizedTag}`;
@@ -85,3 +85,7 @@ export const searchByTagTool: CatalogTool<SearchByTagInput> = {
   parse: parseSearchByTagInput,
   execute: searchByTag,
 };
+
+function normalizeTagForSearch(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}

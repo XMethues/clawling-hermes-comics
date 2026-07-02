@@ -39,6 +39,11 @@ test("search_by_tag matches normalized tags case-insensitively", async () => {
       normalizedName: "drama-comic",
       lastSourceId: sourceId,
     });
+    const spacedTagComicId = insertComic(sqlite, {
+      name: "Spaced Tag Comic",
+      normalizedName: "spaced-tag-comic",
+      lastSourceId: sourceId,
+    });
 
     insertSourceEntry(sqlite, {
       comicId: actionComicId,
@@ -58,20 +63,33 @@ test("search_by_tag matches normalized tags case-insensitively", async () => {
       sourceComicKey: "drama",
       viewCount: 30,
     });
+    insertSourceEntry(sqlite, {
+      comicId: spacedTagComicId,
+      sourceId,
+      sourceComicKey: "spaced-tag",
+      viewCount: 40,
+    });
 
     insertTag(sqlite, actionComicId, "Action", "action");
     insertTag(sqlite, upperActionComicId, "ACTION", "ACTION");
     insertTag(sqlite, dramaComicId, "Drama", "drama");
+    insertTag(sqlite, spacedTagComicId, "Space Action", "space action");
   } finally {
     sqlite.close();
   }
 
   try {
     const result = await searchByTag({ tag: "aCtIoN", limit: 20, offset: 0 }, { dbFileName });
+    const spacedResult = await searchByTag(
+      { tag: "  SPACE   ACTION  ", limit: 20, offset: 0 },
+      { dbFileName },
+    );
 
     expect(result.total).toBe(2);
     expect(result.items.map((comic) => comic.name)).toEqual(["Action Comic", "Upper Action Comic"]);
     expect(result.items.map((comic) => comic.sourceKey)).toEqual(["rouman5", "rouman5"]);
+    expect(spacedResult.total).toBe(1);
+    expect(spacedResult.items[0]?.name).toBe("Spaced Tag Comic");
   } finally {
     cleanupSqlite(dbFileName);
   }
