@@ -1,0 +1,84 @@
+services:
+  crawler:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: comics-crawler:dev
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_FILE_NAME: /app/data/comics.sqlite
+      CRAWLEE_STORAGE_DIR: /app/storage/crawler
+      PRODUCTION_CRAWLER_LOCK_FILE: /app/data/crawler-production.lock
+      PRODUCTION_CRAWLER_LOG_DIR: /app/logs/crawler
+      PRODUCTION_CRAWLER_BACKUP_DIR: /app/data/backups
+      PRODUCTION_CRAWLER_SUMMARY_PATH: /app/data/last-production-summary.json
+      PRODUCTION_CRAWLER_USE_BUN_SQLITE_MIGRATE: ${PRODUCTION_CRAWLER_USE_BUN_SQLITE_MIGRATE:-true}
+      PRODUCTION_CRAWLER_SKIP_NETWORK: ${PRODUCTION_CRAWLER_SKIP_NETWORK:-false}
+      PRODUCTION_CRAWLER_SKIP_BROWSER_INSTALL: ${PRODUCTION_CRAWLER_SKIP_BROWSER_INSTALL:-false}
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: ${MCP_PORT:-3000}
+    command: ["--filter", "@comics/crawler", "${PRODUCTION_CRAWLER_SCRIPT:-production:run}"]
+    volumes:
+      - comics-data:/app/data
+      - comics-storage:/app/storage
+      - comics-logs:/app/logs
+    restart: unless-stopped
+
+  mcp-server:
+    image: comics-crawler:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_FILE_NAME: /app/data/comics.sqlite
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: ${MCP_PORT:-3000}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      MCP_SERVER_NAME: ${MCP_SERVER_NAME:-comics-mcp-server}
+      MCP_SERVER_VERSION: ${MCP_SERVER_VERSION:-0.1.0}
+    command: ["--filter", "@comics/mcp-server", "start"]
+    ports:
+      - "${MCP_PORT:-3000}:${MCP_PORT:-3000}"
+    volumes:
+      - comics-data:/app/data:ro
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bun -e \"const port=process.env.MCP_PORT||'3000'; const r=await fetch('http://127.0.0.1:'+port+'/health'); process.exit(r.ok?0:1)\"",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  backup:
+    image: comics-crawler:dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["backup"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DB_FILE_NAME: /app/data/comics.sqlite
+      PRODUCTION_CRAWLER_BACKUP_DIR: /app/data/backups
+    command: ["apps/crawler/src/scripts/backup.ts"]
+    volumes:
+      - comics-data:/app/data
+    restart: "no"
+
+volumes:
+  comics-data:
+    name: comics-data
+  comics-storage:
+    name: comics-storage
+  comics-logs:
+    name: comics-logs

@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import {
   closeSync,
   copyFileSync,
@@ -324,11 +325,61 @@ async function runWorkspaceCommand(
   }
 }
 
+function runBunSqliteMigrations(root: string): void {
+  const dbEnv = getDbEnv();
+  const dbFileName = isAbsolute(dbEnv.fileName)
+    ? dbEnv.fileName
+    : resolveFromRoot(root, dbEnv.fileName);
+  const migrationDir = resolveFromRoot(root, "packages/db/drizzle");
+  const migrationFiles = readdirSync(migrationDir)
+    .filter((file) => file.endsWith(".sql"))
+    .sort();
+
+  mkdirSync(dirname(dbFileName), { recursive: true });
+
+  const sqlite = new Database(dbFileName, { create: true });
+
+  try {
+    sqlite.exec("PRAGMA foreign_keys = ON");
+
+    const existingSchema = sqlite
+      .query("select name from sqlite_master where type = 'table' and name = 'comics'")
+      .get();
+
+    if (existingSchema) {
+      console.info("[production] SQLite schema already exists; direct migration skipped.");
+      return;
+    }
+
+    for (const file of migrationFiles) {
+      const path = join(migrationDir, file);
+      const sql = readFileSync(path, "utf8");
+      const statements = sql
+        .split("--> statement-breakpoint")
+        .map((statement) => statement.trim())
+        .filter(Boolean);
+
+      console.info(`[production] Applying SQLite migration via bun:sqlite: ${file}`);
+
+      for (const statement of statements) {
+        sqlite.exec(statement);
+      }
+    }
+  } finally {
+    sqlite.close();
+  }
+}
+
 async function runMigrations(root: string): Promise<void> {
   if (envBoolean("PRODUCTION_CRAWLER_SKIP_MIGRATE", false)) {
     console.info(
       "[production] Skipping DB migration because PRODUCTION_CRAWLER_SKIP_MIGRATE is true.",
     );
+    return;
+  }
+
+  if (envBoolean("PRODUCTION_CRAWLER_USE_BUN_SQLITE_MIGRATE", false)) {
+    runBunSqliteMigrations(root);
     return;
   }
 
@@ -613,6 +664,38 @@ async function runSiteMode(
   let subprocessError: unknown;
 
   console.info(`[production] Starting ${site.label} ${mode}.`);
+
+  if (envBoolean("PRODUCTION_CRAWLER_SKIP_NETWORK", false)) {
+    const timestamp = nowIso();
+
+    console.info(
+      `[production] Skipping network crawler for ${site.label} ${mode} because PRODUCTION_CRAWLER_SKIP_NETWORK is true.`,
+    );
+
+    return {
+      site: site.id,
+      mode,
+      summary: {
+        sourceKey: site.site.key,
+        mode,
+        crawlRunId: previousRunId,
+        requestQueueName: "",
+        status: "succeeded",
+        total: 0,
+        succeeded: 0,
+        failed: 0,
+        comicsStored: 0,
+        tagsStored: 0,
+        chaptersStored: 0,
+        startedAt: timestamp,
+        finishedAt: timestamp,
+        errors: [],
+      },
+      quality: createEmptyQualityStats(),
+      findings: [],
+      durationMs: Date.now() - startedAtMs,
+    };
+  }
 
   try {
     await runWorkspaceCommand(
