@@ -53,6 +53,7 @@ RUN apt-get update \
     libxrandr2 \
     libxshmfence1 \
     libxss1 \
+    procps \
   && (apt-get install -y --no-install-recommends libasound2 || apt-get install -y --no-install-recommends libasound2t64) \
   && rm -rf /var/lib/apt/lists/*
 
