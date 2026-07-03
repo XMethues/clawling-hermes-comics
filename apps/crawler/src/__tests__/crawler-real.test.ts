@@ -193,6 +193,7 @@ test.serial("rouman5 quality gate failure is persisted and returned as exit 1", 
           env: {
             ...permissiveCrawlerEnv(dbFileName),
             ROUMAN5_MIN_PROBE_COMICS: "1000000",
+            ROUMAN5_PROBE_MAX_REQUESTS: "3",
           },
           timeoutMs: 120_000,
         },
