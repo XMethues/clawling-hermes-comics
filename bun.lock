@@ -30,6 +30,7 @@
         "@comics/db": "workspace:*",
         "@modelcontextprotocol/hono": "latest",
         "@modelcontextprotocol/server": "latest",
+        "drizzle-orm": "latest",
         "hono": "latest",
         "zod": "latest",
       },
